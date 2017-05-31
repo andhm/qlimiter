@@ -1,0 +1,13 @@
+// $Id$
+// vim:ft=javascript
+
+// If your extension references something external, use ARG_WITH
+// ARG_WITH("hm_qlimiter", "for hm_qlimiter support", "no");
+
+// Otherwise, use ARG_ENABLE
+// ARG_ENABLE("hm_qlimiter", "enable hm_qlimiter support", "no");
+
+if (PHP_HM_QLIMITER != "no") {
+	EXTENSION("hm_qlimiter", "hm_qlimiter.c");
+}
+
