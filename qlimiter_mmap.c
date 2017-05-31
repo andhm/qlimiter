@@ -28,7 +28,11 @@ int limiter_incr(char *key, int step, long initval, long maxval, long *retval, l
 		void *shm;
 		shm = (void *)mmap(NULL, sizeof(limiter_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if ((long)shm == -1) {
-			LT_DEBUG("mmap error. %s", strerror(errno));				
+			LT_DEBUG("mmap error. %s", strerror(errno));	
+			shm_unlink(key);
+			close(fd);
+			*retval = 0;
+			return LT_ERR;
 		}
 	
 		close(fd);				
