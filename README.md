@@ -5,7 +5,7 @@ qps限流插件／php
 针对复杂业务逻辑，需要在php端做流量限制端需求
 
 # 使用
-	qlimiter_incr
+### qlimiter_incr
 ```php
 $key = 'get_list_'.(time()%2); 			// 取模减少key的数量
 $step = 1;					// 自增步长
@@ -20,7 +20,7 @@ if ($success) {
 	echo '限流，当前值：',$retval;
 }
 ```
-	qlimiter_delete
+### qlimiter_delete
 ```php
 $key = 'get_list_'.(time()%2);
 qlimiter_delete($key);
