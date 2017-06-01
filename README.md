@@ -26,6 +26,6 @@ if ($success) {
 ```
 ### qlimiter_delete
 ```php
-$key = 'get_list_'.(time()%2);
+$key = 'get_list';
 qlimiter_delete($key);
 ```
