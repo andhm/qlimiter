@@ -34,31 +34,11 @@
 static int le_hm_qlimiter;
 pthread_mutex_t smutex;
 
-#define BUILD_SHM_KEY(pkey, key_len, pnew_key)						\
-	pnew_key = emalloc(key_len + 14);								\
-	snprintf(pnew_key, key_len+14, "qlimiter_%s.shm", pkey);
+#define BUILD_SHM_KEY(pkey, key_len, pnew_key)		\
+	pnew_key = emalloc(key_len + 14);				\
+	snprintf(pnew_key, key_len + 14, "qlimiter_%s.shm", pkey);
 
 #define FREE_SHM_KEY(pkey) efree(pkey);
-
-static long get_current_time(int time_type TSRMLS_DC) {
-	struct timeval tp = {0}; 
-	long time = 0UL;
-	switch (time_type) {
-		case LT_TIME_TYPE_NONE:
-		case LT_TIME_TYPE_SEC:
-			if (!gettimeofday(&tp, NULL)) {
-		        time = (long)(tp.tv_sec);
-		    }
-			break;
-		case LT_TIME_TYPE_HOUR:
-		case LT_TIME_TYPE_DAY:
-			// TODO
-			break;
-		default:
-			break;
-	}
-	return time;
-}
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_incr, 0, 0, 2)
 	ZEND_ARG_INFO(0, key)
@@ -73,17 +53,12 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_delete, 0, 0, 1)
 	ZEND_ARG_INFO(0, key)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_get, 0, 0, 1)
-	ZEND_ARG_INFO(0, key)
-ZEND_END_ARG_INFO()
-
 /* {{{ hm_qlimiter_functions[]
  *
  * Every user visible function must have an entry in hm_qlimiter_functions[].
  */
 const zend_function_entry hm_qlimiter_functions[] = {
 	PHP_FE(qlimiter_incr,	arginfo_incr)
-	PHP_FE(qlimiter_get,	arginfo_get)
 	PHP_FE(qlimiter_delete,	arginfo_delete)
 	PHP_FE_END	/* Must be the last line in hm_qlimiter_functions[] */
 };
@@ -124,7 +99,9 @@ PHP_MINIT_FUNCTION(hm_qlimiter)
 
 	REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_NONE", LT_TIME_TYPE_NONE, CONST_CS | CONST_PERSISTENT);
 	REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_SEC", LT_TIME_TYPE_SEC, CONST_CS | CONST_PERSISTENT);
-	// REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_MIN", LT_TIME_TYPE_MIN, CONST_CS | CONST_PERSISTENT);
+	REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_5SEC", LT_TIME_TYPE_5SEC, CONST_CS | CONST_PERSISTENT);
+	REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_10SEC", LT_TIME_TYPE_10SEC, CONST_CS | CONST_PERSISTENT);
+	REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_MIN", LT_TIME_TYPE_MIN, CONST_CS | CONST_PERSISTENT);
 	// REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_HOUR", LT_TIME_TYPE_HOUR, CONST_CS | CONST_PERSISTENT);
 	// REGISTER_LONG_CONSTANT("QLIMITER_TIME_TYPE_DAY", LT_TIME_TYPE_DAY, CONST_CS | CONST_PERSISTENT);
 
@@ -170,21 +147,26 @@ PHP_FUNCTION(qlimiter_incr)
 	char *key; 
 	long key_len;
 	long step, initval, maxval; 
-	long time_type;
+	long time_type = 0;
 	zval *success = NULL;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s|lllzl", &key, &key_len, &step, &initval, &maxval, &success, &time_type) == FAILURE || !key_len || step <=0 || initval >= maxval) {
 		RETURN_FALSE
 	}
-	char *new_key;
-	BUILD_SHM_KEY(key, key_len, new_key);
-	if (time_type & ~LT_TIME_TYPE_DAY) {
+
+	// time_type 校验
+	if (time_type != LT_TIME_TYPE_SEC && time_type != LT_TIME_TYPE_5SEC &&
+		time_type != LT_TIME_TYPE_10SEC && time_type != LT_TIME_TYPE_MIN &&
+		time_type != LT_TIME_TYPE_HOUR && time_type != LT_TIME_TYPE_DAY &&
+		time_type != LT_TIME_TYPE_NONE) {
 		time_type = LT_TIME_TYPE_SEC;
 	}
 
-	long time = (long)get_current_time(time_type);
+	char *new_key;
+	BUILD_SHM_KEY(key, key_len, new_key);
+	
 	long retval;
-	int ret = limiter_incr(new_key, step, initval, maxval,  &retval, time, time_type, &smutex);
+	int ret = limiter_incr(new_key, step, initval, maxval,  &retval, time_type, &smutex);
 	FREE_SHM_KEY(new_key);
 
 	if (ret == LT_SUCC) {
@@ -199,24 +181,6 @@ PHP_FUNCTION(qlimiter_incr)
 	RETURN_LONG(retval);
 }
 
-PHP_FUNCTION(qlimiter_get)
-{
-	char *key; 
-	long key_len;
-
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &key, &key_len) == FAILURE || !key_len) {
-		RETURN_FALSE
-	}
-
-	char *new_key;
-	BUILD_SHM_KEY(key, key_len, new_key);
-
-	long retval = limiter_get(new_key);
-	FREE_SHM_KEY(new_key);
-
-	RETURN_LONG(retval);
-}
-
 PHP_FUNCTION(qlimiter_delete)
 {
 	char *key; 
@@ -227,8 +191,8 @@ PHP_FUNCTION(qlimiter_delete)
 	}
 
 	char *new_key;
+	
 	BUILD_SHM_KEY(key, key_len, new_key);
-
 	limiter_delete(new_key);
 	FREE_SHM_KEY(new_key);
 	
