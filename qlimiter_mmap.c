@@ -7,8 +7,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-int limiter_incr(char *key, int step, long initval, long maxval, long *retval, long time, int time_type, pthread_mutex_t *smutex) {
-		LT_DEBUG("incr key[%s]", key);
+static unsigned long get_round_time(int round);
+
+int limiter_incr(char *key, int step, long initval, long maxval, long *retval, int time_type, pthread_mutex_t *smutex) {
+		LT_DEBUG("incr key[%s], time_type[%d]", key, time_type);
 		limiter_t *limiter = NULL;
 		int fd = shm_open(key, O_CREAT|O_RDWR, S_IRUSR|S_IWUSR);
 		if (fd == -1) {
@@ -28,11 +30,11 @@ int limiter_incr(char *key, int step, long initval, long maxval, long *retval, l
 		void *shm;
 		shm = (void *)mmap(NULL, sizeof(limiter_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if ((long)shm == -1) {
-			LT_DEBUG("mmap error. %s", strerror(errno));	
+			LT_DEBUG("mmap error. %s", strerror(errno));
 			shm_unlink(key);
 			close(fd);
 			*retval = 0;
-			return LT_ERR;
+			return LT_ERR;			
 		}
 	
 		close(fd);				
@@ -54,7 +56,7 @@ retry:
 				limiter->init_val = initval;
 				limiter->curr_val = initval + step;
 				limiter->in_use = 1;
-				limiter->time = time;
+				limiter->time = get_round_time(time_type);
 				limiter->time_type = time_type;
 
 				pthread_mutexattr_t mutex_shared_attr;
@@ -85,8 +87,16 @@ retry:
 				return LT_FAIL;
 			}
 			limiter->curr_val += step;
-			if (time_type != LT_TIME_TYPE_NONE && time != limiter->time) {
+
+			unsigned long time = 0UL;
+
+			if (limiter->time_type != LT_TIME_TYPE_NONE && 
+				(time = get_round_time(limiter->time_type)) != limiter->time) {
 				LT_DEBUG("reset it, time not same, time_type[%d], old-time[%ld], new-time[%ld]", limiter->time_type, limiter->time, time);
+				if (limiter->time_type != time_type) {
+					// have change time_type
+					time = get_round_time(time_type);
+				}
 				limiter->init_val = initval;
 				limiter->curr_val = initval + step;
 				limiter->time = time;
@@ -141,4 +151,44 @@ long limiter_get(char *key) {
 	munmap(shm, sizeof(limiter_t));
 
 	return curr_val;
+}
+
+static unsigned long get_round_time(int time_type) {
+	int round = 1;
+	switch (time_type) {
+		case LT_TIME_TYPE_NONE:
+		case LT_TIME_TYPE_SEC:
+			round = 1;
+			break;
+		case LT_TIME_TYPE_5SEC:
+			round = 5;
+			break;
+		case LT_TIME_TYPE_10SEC:
+			round = 10;
+			break;
+		case LT_TIME_TYPE_MIN:
+			round = 60;
+			break;
+		case LT_TIME_TYPE_HOUR:
+			round = 3600;
+			break;
+		case LT_TIME_TYPE_DAY:
+			round = 86400;
+			break;
+		default:
+			break;
+	}
+
+	struct timeval tp = {0};
+	unsigned long time = 0UL;
+	if (!gettimeofday(&tp, NULL)) {
+		time = (long)(tp.tv_sec);
+	}
+	int mod = time % (round * 2);
+	if (mod >= round) {
+		time -= (mod % round);
+	} else {
+		time -= mod;
+	}
+	return time;
 }
