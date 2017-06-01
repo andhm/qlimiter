@@ -182,7 +182,7 @@ static unsigned long get_round_time(int time_type) {
 	struct timeval tp = {0};
 	unsigned long time = 0UL;
 	if (!gettimeofday(&tp, NULL)) {
-		time = (long)(tp.tv_sec);
+		time = (unsigned long)(tp.tv_sec);
 	}
 	int mod = time % (round * 2);
 	if (mod >= round) {
