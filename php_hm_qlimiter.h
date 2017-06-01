@@ -44,8 +44,6 @@ PHP_MINFO_FUNCTION(hm_qlimiter);
 
 PHP_FUNCTION(qlimiter_incr);
 PHP_FUNCTION(qlimiter_delete);
-PHP_FUNCTION(qlimiter_get);
-
 
 #ifdef ZTS
 #define HM_QLIMITER_G(v) TSRMG(hm_qlimiter_globals_id, zend_hm_qlimiter_globals *, v)
