@@ -11,7 +11,7 @@ php5.4+ (含php7)
 # 使用
 ### qlimiter_incr
 ```php
-$key = 'get_list_'.(time()%2); 			// 取模减少key的数量
+$key = 'get_list'; 				// 键值
 $step = 1;					// 自增步长
 $initval = 0;					// 初始值，(只有首次调用起作用，后续调整不起作用)
 $maxval = 100;					// 最大值，超过该值，success置false (只有首次调用起作用，后续调整不起作用)
