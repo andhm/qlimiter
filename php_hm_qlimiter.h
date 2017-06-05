@@ -45,6 +45,14 @@ PHP_MINFO_FUNCTION(hm_qlimiter);
 PHP_FUNCTION(qlimiter_incr);
 PHP_FUNCTION(qlimiter_delete);
 
+ZEND_BEGIN_MODULE_GLOBALS(hm_qlimiter)
+  char *full_shm_dir;
+  char *short_shm_dir;
+  char *prefix;
+  char *shm_user;
+  char *enable_shm_dir;
+ZEND_END_MODULE_GLOBALS(hm_qlimiter)
+
 #ifdef ZTS
 #define HM_QLIMITER_G(v) TSRMG(hm_qlimiter_globals_id, zend_hm_qlimiter_globals *, v)
 #else
