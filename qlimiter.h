@@ -17,6 +17,7 @@
 #define LT_TIME_TYPE_DAY	(1<<4)
 #define LT_TIME_TYPE_5SEC	(1<<5)
 #define LT_TIME_TYPE_10SEC	(1<<6)
+#define LT_TIME_TYPE_CUSTOM	(1<<16)
 
 //#define DEBUG
 #ifdef DEBUG
@@ -30,11 +31,15 @@ typedef struct limiter_s {
 	long curr_val;
 	long init_val;
 	unsigned long time;
+	union {
+		long dummy;
+	} ex;
 	int time_type;
+	unsigned int custom_secs; // LT_TIME_TYPE_CUSTOM
 	short in_use;
 } limiter_t;
 
-int limiter_incr(char *key, int step, long initval, long maxval, long *retval, int time_type, pthread_mutex_t *smutex);
+int limiter_incr(char *key, int step, long initval, long maxval, long *retval, int time_type, unsigned int custom_secs, pthread_mutex_t *smutex);
 int limiter_decr(char *key, int step, long initval, long minval);
 long limiter_get(char *key);
 void limiter_delete(char *key);
