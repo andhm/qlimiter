@@ -3,6 +3,8 @@
 
 #include <pthread.h>
 
+#define LT_VERSION_1	0x01
+
 #define LT_SUCC		0
 #define LT_ERR		-1
 #define LT_FAIL		1
@@ -27,13 +29,11 @@
 #endif
 
 typedef struct limiter_s {
+	int version;
 	pthread_mutex_t mutex;
 	long curr_val;
 	long init_val;
 	unsigned long time;
-	union {
-		long dummy;
-	} ex;
 	int time_type;
 	unsigned int custom_secs; // LT_TIME_TYPE_CUSTOM
 	short in_use;
