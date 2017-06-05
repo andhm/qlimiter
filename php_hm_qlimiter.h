@@ -50,7 +50,7 @@ ZEND_BEGIN_MODULE_GLOBALS(hm_qlimiter)
   char *short_shm_dir;
   char *prefix;
   char *shm_user;
-  char *enable_shm_dir;
+  zend_bool enable_shm_dir;
 ZEND_END_MODULE_GLOBALS(hm_qlimiter)
 
 #ifdef ZTS
