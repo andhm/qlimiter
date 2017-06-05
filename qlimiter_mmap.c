@@ -60,6 +60,7 @@ retry:
 				limiter->time = get_round_time(time_type, custom_secs);
 				limiter->time_type = time_type;
 				limiter->custom_secs = time_type == LT_TIME_TYPE_CUSTOM ? custom_secs : 0;
+				limiter->version = LT_VERSION_1;
 
 				pthread_mutexattr_t mutex_shared_attr;
 				pthread_mutexattr_init(&mutex_shared_attr);
