@@ -65,6 +65,7 @@ retry:
 				pthread_mutexattr_t mutex_shared_attr;
 				pthread_mutexattr_init(&mutex_shared_attr);
 				pthread_mutexattr_setpshared(&mutex_shared_attr, PTHREAD_PROCESS_SHARED);
+				pthread_mutexattr_setrobust(&mutex_shared_attr, PTHREAD_MUTEX_ROBUST);
 				pthread_mutex_init(&limiter->mutex, &mutex_shared_attr);
 
 				pthread_mutex_unlock(smutex);
@@ -80,7 +81,16 @@ retry:
 
 		} else {
 			
-			pthread_mutex_lock(&limiter->mutex);
+			int lock_ret = pthread_mutex_lock(&limiter->mutex);
+			if (lock_ret == EOWNERDEAD) {
+				lock_ret = pthread_mutex_consistent(&limiter->mutex);
+				if (lock_ret != 0) {
+					pthread_mutex_unlock(&limiter->mutex);
+					*retval = limiter->curr_val;
+					munmap(shm, sizeof(limiter_t));
+					return LT_FAIL;
+				}
+			}
 			LT_DEBUG("update shm info");	
 
 			unsigned long time = 0UL;
