@@ -24,8 +24,36 @@ if ($success) {
 	echo '限流，当前值：',$retval;
 }
 ```
-### qlimiter_delete
+### qlimiter_decr (参考qlimiter_incr)
+
+### qlimiter_decr_ex (只针对已经存在的key的自减)
 ```php
 $key = 'get_list';
-qlimiter_delete($key);
+$step = 1;
+$success = false;
+$retval = qlimiter_decr_ex($key, $step, $success);
+var_dump($retval, $success);
 ```
+
+### qlimiter_get
+```php
+$key = 'get_list';
+$retval = qlimiter_get($key);
+var_dump(retval);
+```
+
+### qlimiter_qps (针对qps限流，能做到任意一秒内不超过指定阈值限流, key和以上方式均不同，无法使用 类似 qlimiter_get获取此种方式的qps值)
+```php
+$key = 'get_list_1';
+$maxval = 100;
+$success = false;
+$retval = qlimiter_qps($key, $maxval, $success);
+if ($success) {
+	echo '不限流，当前值：',$retval;
+} else {
+	echo '限流，当前值：',$retval;
+}
+```
+
+
+
