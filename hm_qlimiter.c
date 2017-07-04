@@ -12,7 +12,7 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Author:                                                              |
+  | Author: andhm@126.com                                                |
   +----------------------------------------------------------------------+
 */
 
@@ -39,14 +39,6 @@ ZEND_DECLARE_MODULE_GLOBALS(hm_qlimiter)
 static int le_hm_qlimiter;
 static pthread_mutex_t smutex;
 static HashTable shm_list;
-
-static void write_to_file(char *str) {
-	int fd = open("/tmp/php-qlimiter-debug", O_WRONLY|O_CREAT|O_APPEND);
-	char buff[256] = {'\0'};
-	snprintf(buff, sizeof(buff), "[pid=%d, ppid=%d] %s\n", getpid(), getppid(), str);
-	write(fd, buff, 256);
-	close(fd);
-}
 
 static void unmmap_shm_dtor(zval *shm);
 
@@ -87,7 +79,6 @@ typedef struct qlimiter_shm_info_s {
 		shm_info = (qlimiter_shm_info_t*)Z_PTR_P(zval_shm);						\
 	} else {																	\
 		LT_DEBUG("not found shm in hashtable, key[%s]", key);					\
-		write_to_file("not found shm in hashtable");							\
 		shm_info = (qlimiter_shm_info_t*)malloc(sizeof(qlimiter_shm_info_t));	\
 		shm_info->shm_type = type;												\
 		int ret_mmap = LT_ERR;													\
@@ -267,10 +258,6 @@ PHP_MINIT_FUNCTION(hm_qlimiter)
 		closedir(dir);
 	}
 
-	char buff[128] = {'\0'};
-	snprintf(buff, sizeof(buff), "PHP_MINIT_FUNCTION");
-	write_to_file(buff);
-
 	return SUCCESS;
 }
 /* }}} */
@@ -284,10 +271,6 @@ PHP_MSHUTDOWN_FUNCTION(hm_qlimiter)
 	pthread_mutex_destroy(&smutex);
 
 	zend_hash_destroy(&shm_list);
-
-	char buff[128] = {'\0'};
-	snprintf(buff, sizeof(buff), "PHP_MSHUTDOWN_FUNCTION");
-	write_to_file(buff);
 
 	return SUCCESS;
 }
@@ -576,9 +559,6 @@ PHP_FUNCTION(qlimiter_qps)
 
 static void unmmap_shm_dtor(zval *shm) {
 	qlimiter_shm_info_t *shm_info = (qlimiter_shm_info_t*)Z_PTR_P(shm);
-	char buff[128] = {'\0'};
-	snprintf(buff, sizeof(buff), "unmmap_shm, type=%d", shm_info->shm_type);
-	write_to_file(buff);
 	if (shm_info->shm_type == LT_DEFAULT_SHM_INFO || shm_info->shm_type == LT_EX_SHM_INFO) {
 		limiter_unmmap(shm_info->p_shm);
 	} else if (shm_info->shm_type == LT_QPS_SHM_INFO) {
