@@ -25,22 +25,103 @@
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
+#include "SAPI.h"
+#include <fcntl.h>
 #include "php_hm_qlimiter.h"
 #include "qlimiter.h"
+
+// cpu number
+int ncpu = 1;
 
 ZEND_DECLARE_MODULE_GLOBALS(hm_qlimiter)
 
 /* True global resources - no need for thread safety here */
 static int le_hm_qlimiter;
-pthread_mutex_t smutex;
+static pthread_mutex_t smutex;
+static HashTable shm_list;
 
-#define BUILD_SHM_KEY(pkey, key_len, pnew_key)	do {								\
-		char *fmt = HM_QLIMITER_G(enable_shm_dir) ? "%s/%s.shm" : "%s_%s.shm";		\
-		pnew_key = emalloc(key_len + strlen(HM_QLIMITER_G(short_shm_dir)) + 6);		\
-		snprintf(pnew_key, key_len + strlen(HM_QLIMITER_G(short_shm_dir)) + 6, fmt, HM_QLIMITER_G(short_shm_dir), pkey); \
+static void write_to_file(char *str) {
+	int fd = open("/tmp/php-qlimiter-debug", O_WRONLY|O_CREAT|O_APPEND);
+	char buff[256] = {'\0'};
+	snprintf(buff, sizeof(buff), "[pid=%d, ppid=%d] %s\n", getpid(), getppid(), str);
+	write(fd, buff, 256);
+	close(fd);
+}
+
+static void unmmap_shm_dtor(zval *shm);
+
+#define BUILD_SHM_KEY(pkey, key_len, pnew_key)	do {				\
+		pnew_key = (char *)emalloc(key_len + 14);					\
+		snprintf(pnew_key, key_len + 14, "qlimiter_%s.shm", pkey); 	\
 	} while (0)
 
 #define FREE_SHM_KEY(pkey) efree(pkey);
+
+#define BUILD_SHM_KEY2(pkey, key_len, pnew_key_buf, type)						\
+	do {																		\
+		if (type == 1) {														\
+			snprintf(pnew_key_buf, key_len + 18, "qlimiter_qps_%s.shm", pkey);	\
+		} else {																\
+			snprintf(pnew_key_buf, key_len + 14, "qlimiter_%s.shm", pkey);		\
+		}																		\
+	} while (0);
+
+#define SHM_PATH_MAX 256
+
+#define LT_DEFAULT_SHM_INFO	0
+#define LT_EX_SHM_INFO		1
+#define LT_QPS_SHM_INFO		2
+
+typedef struct qlimiter_shm_info_s {
+	void *p_shm;
+	char shm_type;
+} qlimiter_shm_info_t;
+
+#define MMAP_SHM_INTERNAL(key, type, p_shm) do {								\
+	key_len = strlen(key);														\
+	qlimiter_shm_info_t *shm_info = NULL;										\
+	zval *zval_shm = NULL;														\
+	LT_DEBUG("shm_list ele num: %d", zend_hash_num_elements(&shm_list));		\
+	if ((zval_shm = zend_hash_str_find(&shm_list, key, key_len+1)) != NULL) {	\
+		LT_DEBUG("found shm in hashtable, key[%s]", key);						\
+		shm_info = (qlimiter_shm_info_t*)Z_PTR_P(zval_shm);						\
+	} else {																	\
+		LT_DEBUG("not found shm in hashtable, key[%s]", key);					\
+		write_to_file("not found shm in hashtable");							\
+		shm_info = (qlimiter_shm_info_t*)malloc(sizeof(qlimiter_shm_info_t));	\
+		shm_info->shm_type = type;												\
+		int ret_mmap = LT_ERR;													\
+		if (type == LT_QPS_SHM_INFO) {											\
+			ret_mmap = limiter_qps_mmap(key, &(shm_info->p_shm));				\
+		} else if (type == LT_DEFAULT_SHM_INFO) {								\
+			ret_mmap = limiter_mmap(key, &(shm_info->p_shm));					\
+		} else if (type == LT_EX_SHM_INFO) {									\
+			ret_mmap = limiter_mmap_ex(key, &(shm_info->p_shm));				\
+		} else {																\
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, "mmap unknown type");	\
+			free(shm_info);														\
+			break;																\
+		}																		\
+		if (ret_mmap != LT_SUCC) {												\
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, "mmap failed");			\
+			free(shm_info);														\
+			break;																\
+		} else {																\
+			zval zval_new_shm;													\
+			ZVAL_PTR(&zval_new_shm, shm_info);									\
+			if (zend_hash_str_add(&shm_list, key, key_len+1, &zval_new_shm) == NULL) {				\
+				php_error_docref(NULL TSRMLS_CC, E_WARNING, "mmap: add shm to shm_list failed");	\
+				free(shm_info);																		\
+				break;																				\
+			}																						\
+		}																							\
+	}																								\
+	p_shm = shm_info->p_shm;																		\
+} while (0);
+
+#define MMAP_SHM(key, p_shm) MMAP_SHM_INTERNAL(key, LT_DEFAULT_SHM_INFO, p_shm)
+#define MMAP_SHM_EX(key, p_shm) MMAP_SHM_INTERNAL(key, LT_EX_SHM_INFO, p_shm)
+#define MMAP_SHM_QPS(key, p_shm) MMAP_SHM_INTERNAL(key, LT_QPS_SHM_INFO, p_shm)
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_incr, 0, 0, 4)
 	ZEND_ARG_INFO(0, key)
@@ -52,8 +133,34 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_incr, 0, 0, 4)
 	ZEND_ARG_INFO(0, custom_secs)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_decr, 0, 0, 4)
+	ZEND_ARG_INFO(0, key)
+	ZEND_ARG_INFO(0, step)
+	ZEND_ARG_INFO(0, initval)
+	ZEND_ARG_INFO(0, minval)
+	ZEND_ARG_INFO(1, success)
+	ZEND_ARG_INFO(0, time_type)
+	ZEND_ARG_INFO(0, custom_secs)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_decr_ex, 0, 0, 2)
+	ZEND_ARG_INFO(0, key)
+	ZEND_ARG_INFO(0, step)
+	ZEND_ARG_INFO(1, success)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_delete, 0, 0, 1)
 	ZEND_ARG_INFO(0, key)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_get, 0, 0, 1)
+	ZEND_ARG_INFO(0, key)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_qps, 0, 0, 2)
+	ZEND_ARG_INFO(0, key)
+	ZEND_ARG_INFO(0, maxqps)
+	ZEND_ARG_INFO(1, success)
 ZEND_END_ARG_INFO()
 
 PHP_INI_BEGIN()
@@ -68,7 +175,11 @@ PHP_INI_END()
  */
 const zend_function_entry hm_qlimiter_functions[] = {
 	PHP_FE(qlimiter_incr,	arginfo_incr)
+	PHP_FE(qlimiter_decr,	arginfo_decr)
+	PHP_FE(qlimiter_decr_ex,	arginfo_decr_ex)
 	PHP_FE(qlimiter_delete,	arginfo_delete)
+	PHP_FE(qlimiter_get,	arginfo_get)
+	PHP_FE(qlimiter_qps,	arginfo_qps)
 	PHP_FE_END	/* Must be the last line in hm_qlimiter_functions[] */
 };
 /* }}} */
@@ -122,70 +233,43 @@ PHP_MINIT_FUNCTION(hm_qlimiter)
   	pthread_mutexattr_setpshared(&mutex_shared_attr, PTHREAD_PROCESS_SHARED);
   	pthread_mutex_init(&smutex, &mutex_shared_attr);	
 
-  	HM_QLIMITER_G(full_shm_dir) = NULL;
-	HM_QLIMITER_G(short_shm_dir) = NULL;
-  	if (HM_QLIMITER_G(enable_shm_dir)) {
-	  	// create shm dir
-	  	char *shm_dir = "/dev/shm/";
-	  	if (access(shm_dir, F_OK) == 0) {
-	  		ssize_t full_dir_len = 0, short_dir_len = 0;
-	  		if (!strlen(HM_QLIMITER_G(prefix))) {
-	  			full_dir_len = strlen(shm_dir) + strlen("qlimiter") + 1;
-	  			short_dir_len = strlen("qlimiter") + 1;
-	  			HM_QLIMITER_G(full_shm_dir) = (char *)malloc(full_dir_len);
-	  			HM_QLIMITER_G(short_shm_dir) = (char *)malloc(short_dir_len);
+  	zend_hash_init(&shm_list, 0, NULL, unmmap_shm_dtor, 1);
 
-	  			snprintf(HM_QLIMITER_G(full_shm_dir), full_dir_len, "%sqlimiter", shm_dir);
-	  			snprintf(HM_QLIMITER_G(short_shm_dir), short_dir_len, "qlimiter");
+  	// cpu number
+  	ncpu = sysconf(_SC_NPROCESSORS_CONF);
 
-	  		} else {
-	  			full_dir_len = strlen(shm_dir) + strlen("qlimiter") + strlen(HM_QLIMITER_G(prefix)) + 2;
-	  			short_dir_len = strlen("qlimiter") + strlen(HM_QLIMITER_G(prefix)) + 2;
-
-	  			HM_QLIMITER_G(full_shm_dir) = (char *)malloc(full_dir_len);
-	  			HM_QLIMITER_G(short_shm_dir) = (char *)malloc(short_dir_len);
-
-	  			snprintf(HM_QLIMITER_G(full_shm_dir), full_dir_len, "%sqlimiter_%s", shm_dir, HM_QLIMITER_G(prefix));
-	  			snprintf(HM_QLIMITER_G(short_shm_dir), short_dir_len, "qlimiter_%s", HM_QLIMITER_G(prefix));
-	  		}
-
-	  		if (mkdir(HM_QLIMITER_G(full_shm_dir), 0700) < 0) {
-	  			php_error_docref(NULL TSRMLS_CC, E_WARNING, "Mkdir qlimiter shm dir[%s] failed, %s", HM_QLIMITER_G(full_shm_dir), strerror(errno));
-	  		} else if (strlen(HM_QLIMITER_G(shm_user))) {
-	  			uid_t uid;
-	  			struct passwd *pwd;
-	  			pwd = getpwnam(HM_QLIMITER_G(shm_user));
-	  			if (pwd == NULL) {
-	  				php_error_docref(NULL TSRMLS_CC, E_WARNING, "Getpwnam failed. shm_user[%s]", HM_QLIMITER_G(shm_user));
-	  				return SUCCESS;
-	  			}
-	  			uid = pwd->pw_uid;
-	  			if (chown(HM_QLIMITER_G(full_shm_dir), uid, -1) < 0) {
-	  				php_error_docref(NULL TSRMLS_CC, E_WARNING, "Chown failed. dir[%s] shm_user[%s]", HM_QLIMITER_G(full_shm_dir), HM_QLIMITER_G(shm_user));
-	  				return SUCCESS;
-	  			}
-	  		}
-
-	  	} else {
-	  		  	php_error_docref(NULL TSRMLS_CC, E_WARNING, "Shm dir [%s] can not access", shm_dir);
-	  	}
-
-	} else {
-	  	// no shm dir
-	  	ssize_t short_dir_len = 0;
-	  	if (!strlen(HM_QLIMITER_G(prefix))) {
-			short_dir_len = strlen("qlimiter") + 1;
-  			HM_QLIMITER_G(short_shm_dir) = (char *)malloc(short_dir_len);
-
-  			snprintf(HM_QLIMITER_G(short_shm_dir), short_dir_len, "qlimiter");
-	  	} else {
-	  		short_dir_len = strlen("qlimiter") + strlen(HM_QLIMITER_G(prefix)) + 2;
-
-  			HM_QLIMITER_G(short_shm_dir) = (char *)malloc(short_dir_len);
-
-  			snprintf(HM_QLIMITER_G(short_shm_dir), short_dir_len, "qlimiter_%s", HM_QLIMITER_G(prefix));
-	  	}
+  	// delete shm files (not cli)
+  	DIR *dir;
+	char *shm_dir = "/dev/shm";
+    if (strcmp(sapi_module.name, "cli") && (dir = opendir(shm_dir)) != NULL) {
+   		struct dirent *dir_info;
+        char file_path[SHM_PATH_MAX] = {'\0'};
+		char *qlimiter_prefix = "qlimiter";
+        char cmp_qlimiter_prefix[9] = {'\0'};
+		while ((dir_info = readdir(dir)) != NULL) {
+			if (dir_info->d_type != DT_REG) {
+				continue;
+			}
+			if (strlen(dir_info->d_name) < 9) {
+				continue;
+			}
+			snprintf(cmp_qlimiter_prefix, 9, dir_info->d_name);
+			if (strcmp(qlimiter_prefix, cmp_qlimiter_prefix) != 0) {
+				continue;
+			}
+            strcpy(file_path, shm_dir);
+            strcat(file_path, "/");
+            strcat(file_path, dir_info->d_name);
+            shm_unlink(dir_info->d_name);
+            // double delete
+			remove(file_path);
+        }
+		closedir(dir);
 	}
+
+	char buff[128] = {'\0'};
+	snprintf(buff, sizeof(buff), "PHP_MINIT_FUNCTION");
+	write_to_file(buff);
 
 	return SUCCESS;
 }
@@ -199,12 +283,11 @@ PHP_MSHUTDOWN_FUNCTION(hm_qlimiter)
 
 	pthread_mutex_destroy(&smutex);
 
-	if (HM_QLIMITER_G(full_shm_dir)) {
-		free(HM_QLIMITER_G(full_shm_dir));
-	}
-	if (HM_QLIMITER_G(short_shm_dir)) {
-		free(HM_QLIMITER_G(short_shm_dir));
-	}
+	zend_hash_destroy(&shm_list);
+
+	char buff[128] = {'\0'};
+	snprintf(buff, sizeof(buff), "PHP_MSHUTDOWN_FUNCTION");
+	write_to_file(buff);
 
 	return SUCCESS;
 }
@@ -253,14 +336,130 @@ PHP_FUNCTION(qlimiter_incr)
 		time_type = LT_TIME_TYPE_SEC;
 	}
 	
-	char *new_key;
-	BUILD_SHM_KEY(key, key_len, new_key);
+	char new_key[SHM_PATH_MAX] = {'\0'};
+	BUILD_SHM_KEY2(key, key_len, new_key, 0);
+
+	void *p_shm = NULL;
+	MMAP_SHM(new_key, p_shm);
+
+	LT_DEBUG("qlimiter_incr key[%s]", new_key);
+
+	long retval = 0;
+	int ret = LT_ERR;
+	if (p_shm != NULL) {
+		ret = limiter_incr(p_shm, step, initval, maxval,  &retval, time_type, custom_secs, &smutex);
+	}
+
+	if (ret == LT_SUCC) {
+		if (success) {
+#if PHP_VERSION_ID >= 70000
+			zval_ptr_dtor(success);
+#endif
+			ZVAL_TRUE(success);
+		}
+		RETURN_LONG(retval);
+	}
+	if (success) {
+#if PHP_VERSION_ID >= 70000
+		zval_ptr_dtor(success);
+#endif
+		ZVAL_FALSE(success);
+	}
+	RETURN_LONG(retval);
+}
+
+PHP_FUNCTION(qlimiter_decr)
+{
+	char *key; 
+	long key_len;
+	long step, initval, minval; 
+	long time_type = 0, custom_secs = 0;
+	zval *success = NULL;
+#if PHP_VERSION_ID >= 70000
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "slll|z/ll", &key, &key_len, &step, &initval, &minval, &success, &time_type, &custom_secs) == FAILURE || 
+		!key_len || step <=0 || 
+		initval <= minval || 
+		(time_type == LT_TIME_TYPE_CUSTOM && custom_secs <= 0)) {
+#else
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "slll|zll", &key, &key_len, &step, &initval, &minval, &success, &time_type, &custom_secs) == FAILURE || 
+		!key_len || 
+		step <=0 || 
+		initval <= minval ||
+		(time_type == LT_TIME_TYPE_CUSTOM && custom_secs <= 0)) {
+#endif	
+		RETURN_FALSE
+	}
+	// time_type 校验
+	if (time_type != LT_TIME_TYPE_SEC && time_type != LT_TIME_TYPE_5SEC &&
+		time_type != LT_TIME_TYPE_10SEC && time_type != LT_TIME_TYPE_MIN &&
+		time_type != LT_TIME_TYPE_HOUR && time_type != LT_TIME_TYPE_DAY &&
+		time_type != LT_TIME_TYPE_CUSTOM && time_type != LT_TIME_TYPE_NONE) {
+		time_type = LT_TIME_TYPE_SEC;
+	}
 	
-	long retval;
-	int ret = limiter_incr(new_key, step, initval, maxval,  &retval, time_type, custom_secs, &smutex);
+	char new_key[SHM_PATH_MAX] = {'\0'};
+	BUILD_SHM_KEY2(key, key_len, new_key, 0);
 
-	FREE_SHM_KEY(new_key);
+	void *p_shm = NULL;
+	MMAP_SHM(new_key, p_shm);
 
+	LT_DEBUG("qlimiter_decr key[%s]", new_key);
+
+	long retval = 0;
+	int ret = LT_ERR;
+	if (p_shm != NULL) {
+		ret = limiter_decr(p_shm, step, initval, minval,  &retval, time_type, custom_secs, &smutex);
+	}
+
+	if (ret == LT_SUCC) {
+		if (success) {
+#if PHP_VERSION_ID >= 70000
+			zval_ptr_dtor(success);
+#endif
+			ZVAL_TRUE(success);
+		}
+		RETURN_LONG(retval);
+	}
+	if (success) {
+#if PHP_VERSION_ID >= 70000
+		zval_ptr_dtor(success);
+#endif
+		ZVAL_FALSE(success);
+	}
+	RETURN_LONG(retval);
+}
+
+PHP_FUNCTION(qlimiter_decr_ex)
+{
+	char *key; 
+	long key_len;
+	long step; 
+	zval *success = NULL;
+#if PHP_VERSION_ID >= 70000
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl|z/", &key, &key_len, &step, &success) == FAILURE || 
+		!key_len || step <=0) {
+#else
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl|z", &key, &key_len, &step, &success) == FAILURE || 
+		!key_len || 
+		step <=0) {
+#endif	
+		RETURN_FALSE
+	}
+
+	char new_key[SHM_PATH_MAX] = {'\0'};
+	BUILD_SHM_KEY2(key, key_len, new_key, 0);
+
+	void *p_shm = NULL;
+	MMAP_SHM_EX(new_key, p_shm);
+
+	LT_DEBUG("qlimiter_decr_ex key[%s]", new_key);	
+
+	long retval = 0;
+	int ret = LT_ERR;
+	if (p_shm != NULL) {
+		ret = limiter_decr_ex(p_shm, step, &retval, &smutex);
+	}
+	
 	if (ret == LT_SUCC) {
 		if (success) {
 #if PHP_VERSION_ID >= 70000
@@ -287,16 +486,106 @@ PHP_FUNCTION(qlimiter_delete)
 	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &key, &key_len) == FAILURE || !key_len) {
 		RETURN_FALSE
 	}
-
-	char *new_key;
 	
-	BUILD_SHM_KEY(key, key_len, new_key);
+	char new_key[SHM_PATH_MAX] = {'\0'};
+	BUILD_SHM_KEY2(key, key_len, new_key, 0);
+
 	limiter_delete(new_key);
-	FREE_SHM_KEY(new_key);
 	
 	RETURN_TRUE
 }
 
+PHP_FUNCTION(qlimiter_get)
+{
+	char *key; 
+	long key_len;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &key, &key_len) == FAILURE || !key_len) {
+		RETURN_FALSE
+	}
+	
+	char new_key[SHM_PATH_MAX] = {'\0'};
+	BUILD_SHM_KEY2(key, key_len, new_key, 0);
+
+	void *p_shm = NULL;
+	MMAP_SHM_EX(new_key, p_shm);
+
+	LT_DEBUG("qlimiter_get key[%s]", new_key);	
+
+	long retval = 0;
+	int ret = LT_ERR;
+	if (p_shm != NULL) {
+		ret = limiter_get(p_shm, &retval);
+	}
+
+	if (ret == LT_SUCC) {
+		RETURN_LONG(retval);
+	}
+	
+	RETURN_FALSE
+}
+
+PHP_FUNCTION(qlimiter_qps)
+{
+	char *key; 
+	long key_len;
+	long maxqps; 
+	zval *success = NULL;
+#if PHP_VERSION_ID >= 70000
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl|z/", &key, &key_len, &maxqps, &success) == FAILURE || 
+		!key_len || maxqps <=0) {
+#else
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl|z", &key, &key_len, &maxqps, &success) == FAILURE || 
+		!key_len || 
+		maxqps <=0) {
+#endif	
+		RETURN_FALSE
+	}
+
+	char new_key[SHM_PATH_MAX] = {'\0'};
+	BUILD_SHM_KEY2(key, key_len, new_key, 1);
+
+	void *p_shm = NULL;
+	MMAP_SHM_QPS(new_key, p_shm);
+
+	LT_DEBUG("qlimiter_qps key[%s]", new_key);	
+
+	long retval = 0;
+	int ret = LT_ERR;
+	if (p_shm != NULL) {
+		ret = limiter_qps(p_shm, maxqps, &retval, &smutex);
+	}
+
+	if (ret == LT_SUCC) {
+		if (success) {
+#if PHP_VERSION_ID >= 70000
+			zval_ptr_dtor(success);
+#endif
+			ZVAL_TRUE(success);
+		}
+		RETURN_LONG(retval);
+	}
+	if (success) {
+#if PHP_VERSION_ID >= 70000
+		zval_ptr_dtor(success);
+#endif
+		ZVAL_FALSE(success);
+	}
+	RETURN_LONG(retval);
+}
+
+static void unmmap_shm_dtor(zval *shm) {
+	qlimiter_shm_info_t *shm_info = (qlimiter_shm_info_t*)Z_PTR_P(shm);
+	char buff[128] = {'\0'};
+	snprintf(buff, sizeof(buff), "unmmap_shm, type=%d", shm_info->shm_type);
+	write_to_file(buff);
+	if (shm_info->shm_type == LT_DEFAULT_SHM_INFO || shm_info->shm_type == LT_EX_SHM_INFO) {
+		limiter_unmmap(shm_info->p_shm);
+	} else if (shm_info->shm_type == LT_QPS_SHM_INFO) {
+		limiter_qps_unmmap(shm_info->p_shm);
+	}
+	free(shm_info);
+}
 
 /*
  * Local variables:
