@@ -40,7 +40,11 @@ static int le_hm_qlimiter;
 static pthread_mutex_t smutex;
 static HashTable shm_list;
 
+#if PHP_VERSION_ID >= 70000
 static void unmmap_shm_dtor(zval *shm);
+#else
+static void unmmap_shm_dtor(void *ptr);
+#endif
 
 #define BUILD_SHM_KEY(pkey, key_len, pnew_key)	do {				\
 		pnew_key = (char *)emalloc(key_len + 14);					\
@@ -69,11 +73,12 @@ typedef struct qlimiter_shm_info_s {
 	char shm_type;
 } qlimiter_shm_info_t;
 
+#if PHP_VERSION_ID >= 70000
 #define MMAP_SHM_INTERNAL(key, type, p_shm) do {								\
 	key_len = strlen(key);														\
 	qlimiter_shm_info_t *shm_info = NULL;										\
-	zval *zval_shm = NULL;														\
-	LT_DEBUG("shm_list ele num: %d", zend_hash_num_elements(&shm_list));		\
+    LT_DEBUG("shm_list ele num: %d", zend_hash_num_elements(&shm_list));        \
+    zval *zval_shm = NULL;                                                      \
 	if ((zval_shm = zend_hash_str_find(&shm_list, key, key_len+1)) != NULL) {	\
 		LT_DEBUG("found shm in hashtable, key[%s]", key);						\
 		shm_info = (qlimiter_shm_info_t*)Z_PTR_P(zval_shm);						\
@@ -109,6 +114,49 @@ typedef struct qlimiter_shm_info_s {
 	}																								\
 	p_shm = shm_info->p_shm;																		\
 } while (0);
+
+#else 
+// for php5
+#define MMAP_SHM_INTERNAL(key, type, p_shm) do {                                \
+    key_len = strlen(key);                                                      \
+    qlimiter_shm_info_t *shm_info = NULL;                                       \
+    LT_DEBUG("shm_list ele num: %d", zend_hash_num_elements(&shm_list));        \
+    if (zend_hash_find(&shm_list, key, key_len+1, (void **)&shm_info) == SUCCESS) { \
+        LT_DEBUG("found shm in hashtable, key[%s]", key);                       \
+    } else {                                                                    \
+        LT_DEBUG("not found shm in hashtable, key[%s]", key);                   \
+        shm_info = (qlimiter_shm_info_t*)malloc(sizeof(qlimiter_shm_info_t));   \
+        shm_info->shm_type = type;                                              \
+        int ret_mmap = LT_ERR;                                                  \
+        if (type == LT_QPS_SHM_INFO) {                                          \
+            ret_mmap = limiter_qps_mmap(key, &(shm_info->p_shm));               \
+        } else if (type == LT_DEFAULT_SHM_INFO) {                               \
+            ret_mmap = limiter_mmap(key, &(shm_info->p_shm));                   \
+        } else if (type == LT_EX_SHM_INFO) {                                    \
+            ret_mmap = limiter_mmap_ex(key, &(shm_info->p_shm));                \
+        } else {                                                                \
+            php_error_docref(NULL TSRMLS_CC, E_WARNING, "mmap unknown type");   \
+            free(shm_info);                                                     \
+            break;                                                              \
+        }                                                                       \
+        if (ret_mmap != LT_SUCC) {                                              \
+            php_error_docref(NULL TSRMLS_CC, E_WARNING, "mmap failed");         \
+            free(shm_info);                                                     \
+            break;                                                              \
+        } else {                                                                \
+            qlimiter_shm_info_t *ret_shm_info = NULL;                           \
+            if (zend_hash_add(&shm_list, key, key_len+1, (void **)shm_info, sizeof(qlimiter_shm_info_t), (void **)&ret_shm_info) != SUCCESS) {              \
+                php_error_docref(NULL TSRMLS_CC, E_WARNING, "mmap: add shm to shm_list failed");    \
+                free(shm_info);                                                                     \
+                break;                                                                              \
+            }                                                                                       \
+            free(shm_info);                                                                         \
+            shm_info = ret_shm_info;                                                                \
+        }                                                                                           \
+    }                                                                                               \
+    p_shm = shm_info->p_shm;                                                                        \
+} while (0);
+#endif
 
 #define MMAP_SHM(key, p_shm) MMAP_SHM_INTERNAL(key, LT_DEFAULT_SHM_INFO, p_shm)
 #define MMAP_SHM_EX(key, p_shm) MMAP_SHM_INTERNAL(key, LT_EX_SHM_INFO, p_shm)
@@ -557,6 +605,7 @@ PHP_FUNCTION(qlimiter_qps)
 	RETURN_LONG(retval);
 }
 
+#if PHP_VERSION_ID >= 70000
 static void unmmap_shm_dtor(zval *shm) {
 	qlimiter_shm_info_t *shm_info = (qlimiter_shm_info_t*)Z_PTR_P(shm);
 	if (shm_info->shm_type == LT_DEFAULT_SHM_INFO || shm_info->shm_type == LT_EX_SHM_INFO) {
@@ -566,7 +615,16 @@ static void unmmap_shm_dtor(zval *shm) {
 	}
 	free(shm_info);
 }
-
+#else
+static void unmmap_shm_dtor(void *ptr) {
+    qlimiter_shm_info_t *shm_info = (qlimiter_shm_info_t*)ptr;
+    if (shm_info->shm_type == LT_DEFAULT_SHM_INFO || shm_info->shm_type == LT_EX_SHM_INFO) {
+        limiter_unmmap(shm_info->p_shm);
+    } else if (shm_info->shm_type == LT_QPS_SHM_INFO) {
+        limiter_qps_unmmap(shm_info->p_shm);
+    }
+}
+#endif
 /*
  * Local variables:
  * tab-width: 4
