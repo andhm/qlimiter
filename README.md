@@ -48,7 +48,7 @@ var_dump(retval);
 针对qps限流，能做到任意一秒内不超过指定阈值限流, key和以上方式均不同，无法使用 类似 qlimiter_get获取此种方式的qps值
 ```php
 $key = 'get_list_1';
-$maxval = 100;
+$maxval = 100; // 最大值不能超过 65535
 $success = false;
 $retval = qlimiter_qps($key, $maxval, $success);
 if ($success) {
