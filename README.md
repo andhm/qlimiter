@@ -28,7 +28,7 @@ $maxval = 100;					// 最大值，超过该值，success置false (只有首次�
 $success = false;				// true：自增成功；false：内部错误+超过最大值错误
 $time_type = QLIMITER_TIME_TYPE_SEC;		// 可选参数，默认按照每秒限流，（如没有时间限制设置为 QLIMITER_TIME_TYPE_NONE）(只有首次调用起作用，后续调整不起作用)
 						// 各个time_type枚举值如下：
-						// LT_TIME_TYPE_NONE	没有时间限制
+						// LT_TIME_TYPE_NONE	没有时间限制（可以当作普通计数器使用）
 						// LT_TIME_TYPE_SEC	每秒限流
 						// LT_TIME_TYPE_MIN	每分钟限流
 						// LT_TIME_TYPE_HOUR	每小时限流
@@ -36,7 +36,7 @@ $time_type = QLIMITER_TIME_TYPE_SEC;		// 可选参数，默认按照每秒限流
 						// LT_TIME_TYPE_5SEC	每5秒限流
 						// LT_TIME_TYPE_10SEC	每10秒限流
 						// LT_TIME_TYPE_CUSTOM	自定义时间限流，单位s
-$retval = qlimiter_incr($key, $step, $initval, $maxval, &$success, $time_type);	// 返回自增后的值
+$retval = qlimiter_incr($key, $step, $initval, $maxval, $success, $time_type);	// 返回自增后的值
 if ($success) {
 	echo '不限流，当前值：',$retval;
 } else {
