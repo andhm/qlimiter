@@ -55,6 +55,7 @@ typedef volatile unsigned long atomic_t;
 #endif
 
 typedef struct limiter_s {
+	int version;
 #ifdef LT_USE_SPINLOCK
     atomic_t lock;
 #else
@@ -63,7 +64,6 @@ typedef struct limiter_s {
 	long curr_val;
 	long init_val;
 	unsigned long time;
-	int version;
 	int time_type;
 	unsigned int custom_secs; // LT_TIME_TYPE_CUSTOM
 	short in_use;
